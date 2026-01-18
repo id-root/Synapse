@@ -1,3 +1,16 @@
+<p align="center">
+  <a href="https://go.dev//">
+    <img src="https://img.shields.io/badge/Made%20with-Go-blue.svg" alt="Made with Go">
+  </a>
+  <a href="https://github.com/id-root/LanDrop">
+    <img src="https://img.shields.io/badge/version-1.0-blue.svg" alt="Version 3.1.0">
+  </a>
+  <a href="https://opensource.org/licenses/MIT">
+    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
+  </a>
+</p>
+
+
 # LanDrop
 
 LanDrop is a command-line tool for peer-to-peer file transfer over Local Area Networks (LAN) or Hotspots. It allows you to send files and directories between devices without manually entering IP addresses, using mDNS for automatic discovery.
