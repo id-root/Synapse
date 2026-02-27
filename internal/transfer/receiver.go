@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,10 +23,11 @@ import (
 
 // ReceiverOptions configures the receiver behavior for GUI support
 type ReceiverOptions struct {
-	DownloadDir string
-	OnProgress  func(ProgressInfo)
-	OnComplete  func(fileName string)
-	OnError     func(err error)
+	DownloadDir     string
+	OnProgress      func(ProgressInfo)
+	OnComplete      func(fileName string)
+	OnError         func(err error)
+	OnTransferStart func(net.Conn)
 }
 
 // ReceiveConnect connects to a specific peer and downloads the file/directory
@@ -49,6 +51,10 @@ func ReceiveConnectWithOptions(address string, opts ReceiverOptions) error {
 		return fmt.Errorf("failed to connect to sender: %w", err)
 	}
 	defer conn.Close()
+
+	if opts.OnTransferStart != nil {
+		opts.OnTransferStart(conn)
+	}
 
 	ui.Info("Waiting for sender approval...")
 
