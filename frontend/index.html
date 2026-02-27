@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Synapse</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+</head>
+
+<body>
+    <!-- Background Decorators -->
+    <div class="bg-shape shape-1"></div>
+    <div class="bg-shape shape-2"></div>
+    <div class="bg-shape shape-3"></div>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-card">
+            <div class="logo">
+                <div class="logo-icon"><i class="ri-thunderstorms-fill"></i></div>
+                <h1>Synapse</h1>
+            </div>
+
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-tab="send" id="nav-send">
+                    <i class="ri-upload-cloud-2-line"></i>
+                    <span>Send Files</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="receive" id="nav-receive">
+                    <i class="ri-download-cloud-2-line"></i>
+                    <span>Receive Files</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="history" id="nav-history">
+                    <i class="ri-history-line"></i>
+                    <span>Transfer History</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="settings" id="nav-settings">
+                    <i class="ri-settings-4-line"></i>
+                    <span>Settings</span>
+                </a>
+            </nav>
+
+            <div class="device-status">
+                <div class="status-indicator online"></div>
+                <div class="device-info">
+                    <span class="device-name" id="device-name">My Device</span>
+                    <span class="device-ip" id="device-ip">Loading...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Send Tab -->
+            <section id="send-tab" class="tab-content active">
+                <header class="section-header">
+                    <h2>Send Files</h2>
+                    <p>Select files or directories to share on your local network.</p>
+                </header>
+
+                <div class="upload-area glass-card" id="upload-area">
+                    <i class="ri-file-add-line upload-icon"></i>
+                    <h3>Drag & Drop files here</h3>
+                    <p>or click to browse from your computer</p>
+                    <button class="btn btn-primary" id="btn-browse-files">Browse Files</button>
+                    <button class="btn btn-secondary" id="btn-select-folder">Select Folder</button>
+                </div>
+
+                <div class="selected-files" id="selected-files-container" style="display: none;">
+                    <h3 id="selected-files-header">Ready to Send (0)</h3>
+                    <div class="file-list" id="file-list"></div>
+                </div>
+
+                <div class="action-bar glass-card" id="action-bar" style="display: none;">
+                    <div class="action-info" id="action-info">
+                        <p>Ready to send</p>
+                    </div>
+                    <div class="action-buttons">
+                        <button class="btn btn-primary" id="btn-start-send">
+                            <i class="ri-send-plane-fill"></i> Start Sending
+                        </button>
+                        <button class="btn btn-secondary" id="btn-stop-send" style="display: none;">
+                            <i class="ri-stop-circle-line"></i> Stop
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Sending status bar -->
+                <div class="action-bar glass-card" id="sending-status-bar" style="display: none;">
+                    <div class="action-info">
+                        <p>Waiting for receivers on <strong>Port <span id="sender-port">—</span></strong>...</p>
+                    </div>
+                    <div class="loader-ripple">
+                        <div></div>
+                        <div></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Receive Tab -->
+            <section id="receive-tab" class="tab-content">
+                <header class="section-header">
+                    <h2>Receive Files</h2>
+                    <p>Discover devices sending files on your network.</p>
+                </header>
+
+                <div class="radar-container glass-card">
+                    <div class="radar">
+                        <div class="radar-beam"></div>
+                    </div>
+                    <div class="radar-text" id="radar-text">Click scan to discover peers via mDNS...</div>
+                </div>
+
+                <div class="scan-actions" style="text-align: center; margin-bottom: 2rem;">
+                    <button class="btn btn-primary" id="btn-scan-peers">
+                        <i class="ri-search-line"></i> Scan for Peers
+                    </button>
+                </div>
+
+                <div class="peers-list" id="peers-list-container" style="display: none;">
+                    <h3>Discovered Peers</h3>
+                    <div class="peer-grid" id="peer-grid"></div>
+                </div>
+
+                <div class="no-peers glass-card" id="no-peers" style="display: none;">
+                    <i class="ri-wifi-off-line"
+                        style="font-size: 3rem; color: var(--text-light); display: block; margin-bottom: 1rem;"></i>
+                    <p style="color: var(--text-secondary);">No peers found. Make sure someone is sending files on the
+                        same network.</p>
+                </div>
+            </section>
+
+            <!-- History Tab -->
+            <section id="history-tab" class="tab-content">
+                <header class="section-header">
+                    <h2>Transfer History</h2>
+                    <p>Recent files sent and received.</p>
+                </header>
+
+                <div class="history-list glass-card" id="history-list"></div>
+                <div class="no-history" id="no-history" style="display: none; text-align: center; padding: 3rem;">
+                    <i class="ri-inbox-line"
+                        style="font-size: 4rem; color: var(--text-light); display: block; margin-bottom: 1rem;"></i>
+                    <p style="color: var(--text-secondary);">No transfer history yet. Start sending or receiving files!
+                    </p>
+                </div>
+            </section>
+
+            <!-- Settings Tab -->
+            <section id="settings-tab" class="tab-content">
+                <header class="section-header">
+                    <h2>Settings</h2>
+                    <p>Configure Synapse to your preferences.</p>
+                </header>
+
+                <div class="settings-form glass-card">
+                    <div class="settings-group">
+                        <label class="settings-label" for="setting-device-name">
+                            <i class="ri-computer-line"></i> Device Name
+                        </label>
+                        <input type="text" class="settings-input" id="setting-device-name" placeholder="My Device">
+                    </div>
+
+                    <div class="settings-group">
+                        <label class="settings-label" for="setting-download-dir">
+                            <i class="ri-folder-download-line"></i> Download Directory
+                        </label>
+                        <div class="settings-row">
+                            <input type="text" class="settings-input" id="setting-download-dir"
+                                placeholder="/home/user/Downloads" readonly>
+                            <button class="btn btn-secondary btn-sm" id="btn-choose-dir">Browse</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-group">
+                        <label class="settings-label">
+                            <i class="ri-shield-check-line"></i> Auto-Accept Connections
+                        </label>
+                        <div class="toggle-container">
+                            <label class="toggle">
+                                <input type="checkbox" id="setting-auto-accept">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span class="toggle-label">Automatically accept incoming connections</span>
+                        </div>
+                    </div>
+
+                    <div class="settings-actions">
+                        <button class="btn btn-primary" id="btn-save-settings">
+                            <i class="ri-save-line"></i> Save Settings
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Active Transfer Overlay -->
+            <div class="transfer-overlay glass-card" id="transfer-overlay" style="display: none;">
+                <div class="transfer-header">
+                    <h3 id="transfer-title">Transferring...</h3>
+                    <span class="speed" id="transfer-speed">— MB/s</span>
+                </div>
+                <div class="transfer-file" id="transfer-file">—</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="transfer-progress" style="width: 0%;"></div>
+                </div>
+                <div class="transfer-stats">
+                    <span id="transfer-bytes">0 B / 0 B</span>
+                    <span id="transfer-eta">Calculating...</span>
+                </div>
+                <button class="btn btn-secondary btn-sm mt-3" id="btn-cancel-transfer">Cancel</button>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

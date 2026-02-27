@@ -1,0 +1,22 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "synapse",
+  "outputfilename": "synapse",
+  "frontend:dir": "frontend",
+  "frontend:build": "",
+  "frontend:install": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "wailsjsdir": "frontend",
+  "author": {
+    "name": "",
+    "email": ""
+  },
+  "info": {
+    "companyName": "",
+    "productName": "Synapse",
+    "productVersion": "1.0.0",
+    "copyright": "",
+    "comments": "Peer-to-peer file transfer"
+  }
+}
