@@ -53,7 +53,7 @@
 
 ### Download Pre-built Binaries
 
-Download the latest release from [GitHub Releases](https://github.com/id-root/LanDrop/releases):
+Download the latest release from [GitHub Releases](https://github.com/id-root/Synapse/releases):
 
 | Platform | Download |
 |----------|----------|
