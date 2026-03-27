@@ -8,6 +8,11 @@ synapse.exe
 
 # Build output
 build/
+frontend/dist/
+frontend/node_modules/
+node_modules/
+package-lock.json.md5
+frontend/package-lock.json.md5
 
 # Test binary, built with `go test -c`
 *.test
@@ -34,3 +39,4 @@ frontend/wailsjs/
 # Synapse runtime files
 received_files/
 *.log
+.wails/
