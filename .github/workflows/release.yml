@@ -70,11 +70,7 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-      - name: Build Windows Binary
-        run: wails build -platform windows/amd64
-        shell: cmd
-
-      - name: Build Windows Installer (NSIS)
+      - name: Build Windows
         run: wails build -platform windows/amd64 -nsis
         shell: cmd
 
@@ -86,9 +82,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: synapse-windows-amd64
-          path: |
-            build/bin/synapse-windows-amd64.zip
-            build/bin/synapse-amd64-installer.exe
+          path: build/bin/
  
   build-android:
     runs-on: ubuntu-latest
@@ -112,7 +106,7 @@ jobs:
           ./gradlew assembleRelease
 
       - name: Rename APK
-        run: mv android/app/build/outputs/apk/release/app-release-unsigned.apk android/app/build/outputs/apk/release/synapse.apk
+        run: mv android/app/build/outputs/apk/release/app-release.apk android/app/build/outputs/apk/release/synapse.apk
 
       - name: Upload Android Artifact
         uses: actions/upload-artifact@v4
@@ -167,10 +161,6 @@ jobs:
             - **Linux**: `sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0`
             - **Windows**: WebView2 Runtime (pre-installed on Windows 10/11)
             - **Android**: Enable "Install from unknown sources"
-          files: |
-            artifacts/synapse-linux-amd64.tar.gz
-            artifacts/synapse-windows-amd64.zip
-            artifacts/synapse-amd64-installer.exe
-            artifacts/synapse.apk
+          files: artifacts/**/*
           draft: false
           prerelease: false
