@@ -64,25 +64,52 @@ jobs:
           node-version: '20'
 
       - name: Install NSIS
-        run: choco install nsis -y
-        shell: powershell
+        shell: pwsh
+        run: |
+          choco install nsis -y
+          # Add NSIS to PATH for subsequent steps
+          $nsisPath = "C:\Program Files (x86)\NSIS"
+          echo "$nsisPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "NSIS installed at: $nsisPath"
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: Build Windows
-        run: wails build -platform windows/amd64 -nsis
-        shell: cmd
-
-      - name: Package binary as zip
-        run: Compress-Archive -Path build\bin\synapse.exe -DestinationPath build\bin\synapse-windows-amd64.zip
         shell: pwsh
+
+      - name: Verify NSIS is available
+        shell: pwsh
+        run: |
+          $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+          if ($makensis) {
+            Write-Host "makensis found at: $($makensis.Source)"
+          } else {
+            Write-Error "makensis not found in PATH! Installer will not be built."
+            exit 1
+          }
+
+      - name: Build Windows Portable + Installer
+        shell: pwsh
+        run: |
+          # Build portable .exe
+          wails build -platform windows/amd64
+          # Build NSIS installer (requires makensis in PATH)
+          wails build -platform windows/amd64 -nsis
+
+      - name: Package portable binary as zip
+        shell: pwsh
+        run: Compress-Archive -Path build\bin\synapse.exe -DestinationPath build\bin\synapse-windows-amd64.zip
+
+      - name: List build output
+        shell: pwsh
+        run: Get-ChildItem build\bin\ | Format-Table Name, Length
 
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: synapse-windows-amd64
-          path: build/bin/
+          path: |
+            build/bin/synapse-windows-amd64.zip
+            build/bin/synapse-amd64-installer.exe
  
   build-android:
     runs-on: ubuntu-latest
