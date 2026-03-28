@@ -426,6 +426,13 @@ class SenderSession(
         var size = getFileSize(transferUri)
         var tempFile: java.io.File? = null
 
+        // Guard: abort early if size cannot be determined
+        if (!isArchive && size <= 0L) {
+            Log.e("SenderSession", "Cannot determine file size for $name — aborting transfer")
+            onError("Could not determine file size for: $name. Try selecting the file from a different location.")
+            return
+        }
+
         if (isArchive) {
             Log.d("SenderSession", "Zipping ${uris.size} files for transfer...")
             tempFile = File(context.cacheDir, "synapse_transfer_${System.currentTimeMillis()}.zip")
@@ -556,14 +563,34 @@ class SenderSession(
 
     private fun getFileSize(uri: Uri): Long {
         if (uri.scheme == "content") {
-            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            // Fast path: query the content provider for the SIZE column
+            contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
                     val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (idx >= 0) return cursor.getLong(idx)
+                    if (idx >= 0) {
+                        val size = cursor.getLong(idx)
+                        if (size > 0) return size
+                    }
                 }
             }
+            // Reliable fallback: stat the file descriptor directly
+            // This works for gallery images and other providers that omit the SIZE column
+            try {
+                contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    val size = pfd.statSize
+                    if (size > 0) return size
+                }
+            } catch (e: Exception) {
+                Log.w("SenderSession", "Could not stat file descriptor for $uri: ${e.message}")
+            }
         }
-        return 0L
+        // Last resort for file:// URIs
+        return try {
+            val path = uri.path
+            if (path != null) java.io.File(path).length() else 0L
+        } catch (e: Exception) {
+            0L
+        }
     }
 
     /** Stop the sender and close the server socket. */
