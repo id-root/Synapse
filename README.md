@@ -16,7 +16,7 @@
 
 # ⚡ Synapse
 
-**Synapse** is a peer-to-peer file transfer application for Local Area Networks. It features a premium, React-powered dark-mode desktop GUI built with Wails v2, automatic device discovery via mDNS, and end-to-end encrypted transfers — all in a single native binary.
+**Synapse** is a peer-to-peer file transfer application for Local Area Networks. It features a premium, React-powered  desktop GUI built with Wails v2, automatic device discovery via mDNS, and end-to-end encrypted transfers — all in a single native binary.
 
 <p align="center">
   <img src="screenshots/send.png" alt="Send Files" width="100%">
