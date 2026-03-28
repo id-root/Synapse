@@ -8,11 +8,30 @@ synapse.exe
 
 # Build output
 build/
+bin/
 frontend/dist/
 frontend/node_modules/
 node_modules/
 package-lock.json.md5
 frontend/package-lock.json.md5
+
+# Android specific
+.gradle/
+android/.gradle/
+android/build/
+android/app/build/
+android/.kotlin/
+android/app/.kotlin/
+*.apk
+*.aar
+*.jks
+*.keystore
+
+# Local configuration
+local.properties
+.idea/
+.vscode/
+*.iml
 
 # Test binary, built with `go test -c`
 *.test
@@ -29,11 +48,7 @@ frontend/package-lock.json.md5
 ehthumbs.db
 Thumbs.db
 
-# IDE specific settings
-.vscode/
-.idea/
-
-# Wails auto-generated bindings (regenerated on build)
+# Wails auto-generated bindings
 frontend/wailsjs/
 
 # Synapse runtime files
