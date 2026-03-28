@@ -1,13 +1,13 @@
 # Binaries
-synapse
-synapse.exe
+/synapse
+/synapse.exe
 *.exe
 *.dll
 *.so
 *.dylib
 
 # Build output
-build/
+build/bin/
 bin/
 frontend/dist/
 frontend/node_modules/
@@ -47,6 +47,14 @@ local.properties
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Editor Specific
+*~
+*.swp
+*.swo
+
+# Environment
+.env*
 
 # Wails auto-generated bindings
 frontend/wailsjs/
