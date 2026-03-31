@@ -42,7 +42,6 @@ fun TransferOverlay(
 
     val shape = RoundedCornerShape(24.dp)
 
-    // Full screen overlay that dims and blurs background
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -50,104 +49,94 @@ fun TransferOverlay(
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
-            ) { /* Consume clicks to prevent background interaction */ },
+            ) { },
         contentAlignment = Alignment.BottomCenter
     ) {
-        Box(
+        Column(
             modifier = Modifier
+                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(16.dp),
-            contentAlignment = Alignment.BottomCenter
+                .padding(start = 16.dp, end = 16.dp, bottom = 32.dp)
+                .clip(shape)
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(BgElevatedSolid, BgCardSolid)
+                    )
+                )
+                .border(1.dp, GlassBorder, shape)
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Column(
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Transferring...",
+                        style = SynapseTypography.displaySmall,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = fileName,
+                        style = SynapseTypography.bodyMedium,
+                        color = TextSecondary,
+                        maxLines = 1
+                    )
+                }
+                IconButton(onClick = onCancel) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Cancel",
+                        tint = TextMuted
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier.size(80.dp),
+                    color = Accent1,
+                    trackColor = AccentSubtle,
+                    strokeWidth = 6.dp,
+                    strokeCap = StrokeCap.Round
+                )
+                Text(
+                    text = "${(animatedProgress * 100).toInt()}%",
+                    style = SynapseTypography.titleLarge,
+                    color = Accent1
+                )
+            }
+
+            LinearProgressIndicator(
+                progress = { animatedProgress },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(shape)
-                    .background(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(BgElevatedSolid, BgCardSolid)
-                        )
-                    )
-                    .border(1.dp, GlassBorder, shape)
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+                color = Accent1,
+                trackColor = AccentSubtle
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Transferring...",
-                            style = SynapseTypography.displaySmall,
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = fileName,
-                            style = SynapseTypography.bodyMedium,
-                            color = TextSecondary,
-                            maxLines = 1
-                        )
-                    }
-                    IconButton(onClick = onCancel) {
-                        Icon(
-                            imageVector = Icons.Rounded.Close,
-                            contentDescription = "Cancel",
-                            tint = TextMuted
-                        )
-                    }
-                }
-
-                // Circular progress
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(
-                        progress = { animatedProgress },
-                        modifier = Modifier.size(80.dp),
-                        color = Accent1,
-                        trackColor = AccentSubtle,
-                        strokeWidth = 6.dp,
-                        strokeCap = StrokeCap.Round
-                    )
-                    Text(
-                        text = "${(animatedProgress * 100).toInt()}%",
-                        style = SynapseTypography.titleLarge,
-                        color = Accent1
-                    )
-                }
-
-                // Linear progress
-                LinearProgressIndicator(
-                    progress = { animatedProgress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = Accent1,
-                    trackColor = AccentSubtle
+                Text(
+                    text = "$transferredBytes / $totalBytes",
+                    style = SynapseTypography.labelSmall,
+                    color = TextMuted
                 )
-
-                // Stats row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "$transferredBytes / $totalBytes",
-                        style = SynapseTypography.labelSmall,
-                        color = TextMuted
-                    )
-                    Text(
-                        text = speed,
-                        style = SynapseTypography.labelSmall,
-                        color = Accent1
-                    )
-                }
+                Text(
+                    text = speed,
+                    style = SynapseTypography.labelSmall,
+                    color = Accent1
+                )
             }
         }
     }
