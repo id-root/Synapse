@@ -6,16 +6,17 @@ import (
 )
 
 const (
-	CompressionNone = "none"
-	CompressionGzip = "gzip"
-	CompressionZstd = "zstd"
+	CompressionNone    = "none"
+	CompressionGzip    = "gzip"
+	CompressionZstd    = "zstd"
+	CompressionChunked = "chunked"
 )
 
 // FileHeader is the metadata sent before the file content.
 type FileHeader struct {
 	Name        string `json:"name"`
 	Size        int64  `json:"size"`
-	IsArchive   bool   `json:"is_archive,omitempty"` // True if the content is a zip archive (directory transfer)
+	IsArchive   bool   `json:"is_archive,omitempty"`  // True if the content is a zip archive (directory transfer)
 	Compression string `json:"compression,omitempty"` // "none", "gzip"
 }
 
@@ -53,7 +54,7 @@ func (c *ChunkedWriter) Close() error {
 
 // ChunkedReader reads data written by ChunkedWriter.
 type ChunkedReader struct {
-	r        io.Reader
+	r         io.Reader
 	currChunk int64 // Bytes remaining in current chunk
 	eof       bool
 }
