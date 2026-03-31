@@ -65,7 +65,26 @@ func StartSenderWithOptions(inputPaths []string, opts SenderOptions) error {
 
 	if len(inputPaths) > 1 || (len(inputPaths) == 1 && isDirectory(inputPaths[0])) {
 		isArchive = true
-		tmpFile, err := os.CreateTemp("", "synapse-*.zip")
+		
+		baseDir := ""
+		if len(inputPaths) > 0 {
+			info, err := os.Stat(inputPaths[0])
+			if err == nil {
+				if info.IsDir() {
+					baseDir = inputPaths[0]
+				} else {
+					baseDir = filepath.Dir(inputPaths[0])
+				}
+			}
+		}
+		if baseDir == "" {
+			baseDir = os.TempDir()
+		}
+
+		tmpFile, err := os.CreateTemp(baseDir, "synapse-*.zip")
+		if err != nil && baseDir != os.TempDir() {
+			tmpFile, err = os.CreateTemp(os.TempDir(), "synapse-*.zip")
+		}
 		if err != nil {
 			return fmt.Errorf("failed to create temp file: %w", err)
 		}
