@@ -98,7 +98,7 @@ func ReceiveConnectWithOptions(address string, opts ReceiverOptions) error {
 	var destFile *os.File
 
 	if header.IsArchive {
-		destFile, err = os.CreateTemp("", "synapse-recv-*.zip")
+		destFile, err = os.CreateTemp(downloadDir, "synapse-recv-*.zip")
 		if err != nil {
 			return fmt.Errorf("failed to create destination file: %w", err)
 		}
