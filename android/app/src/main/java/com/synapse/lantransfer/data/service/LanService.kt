@@ -62,6 +62,8 @@ class LanService(private val context: Context) {
      * @param uris List of content URIs to send
      * @param onProgress Callback for transfer progress updates
      * @param onPeerConnected Called when a peer connects (with their address)
+     * @param onZipping Called when zipping starts (for multiple files)
+     * @param onZipComplete Called when zipping completes
      * @param onComplete Called when transfer completes successfully
      * @param onError Called when transfer fails
      * @return The port number the server is listening on
@@ -70,13 +72,15 @@ class LanService(private val context: Context) {
         uris: List<Uri>,
         onProgress: (TransferProgress) -> Unit,
         onPeerConnected: (String) -> Unit = {},
+        onZipping: () -> Unit = {},
+        onZipComplete: () -> Unit = {},
         onComplete: (String) -> Unit = {},
         onError: (String) -> Unit = {}
     ): SenderSession = withContext(Dispatchers.IO) {
         val sslContext = createServerSSLContext()
         val serverSocketFactory = sslContext.serverSocketFactory
         val serverSocket = serverSocketFactory.createServerSocket(0) as SSLServerSocket
-        serverSocket.soTimeout = 0  // Block indefinitely on accept
+        serverSocket.soTimeout = 0
         serverSocket.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
 
         val port = serverSocket.localPort
@@ -89,6 +93,8 @@ class LanService(private val context: Context) {
             context = context,
             onProgress = onProgress,
             onPeerConnected = onPeerConnected,
+            onZipping = onZipping,
+            onZipComplete = onZipComplete,
             onComplete = onComplete,
             onError = onError
         )
@@ -387,6 +393,8 @@ class SenderSession(
     private val context: Context,
     private val onProgress: (TransferProgress) -> Unit,
     private val onPeerConnected: (String) -> Unit,
+    private val onZipping: () -> Unit,
+    private val onZipComplete: () -> Unit,
     private val onComplete: (String) -> Unit,
     private val onError: (String) -> Unit
 ) {
@@ -422,14 +430,12 @@ class SenderSession(
         val output = BufferedOutputStream(socket.getOutputStream(), 4 * 1024 * 1024)
         val input = BufferedInputStream(socket.getInputStream())
 
-        // Step 1: Prepare file info and potential archive
         val isArchive = uris.size > 1
         var transferUri = uris.first()
         var name = getFileName(transferUri) ?: "files.zip"
         var size = getFileSize(transferUri)
         var tempFile: java.io.File? = null
 
-        // Guard: abort early if size cannot be determined
         if (!isArchive && size <= 0L) {
             Log.e("SenderSession", "Cannot determine file size for $name — aborting transfer")
             onError("Could not determine file size for: $name. Try selecting the file from a different location.")
@@ -438,6 +444,7 @@ class SenderSession(
 
         if (isArchive) {
             Log.d("SenderSession", "Zipping ${uris.size} files for transfer...")
+            onZipping()
             tempFile = File(context.externalCacheDir ?: context.cacheDir, "synapse_transfer_${System.currentTimeMillis()}.zip")
             name = "Synapse_Transfer.zip"
             
@@ -455,6 +462,7 @@ class SenderSession(
                         }
                     }
                 }
+                onZipComplete()
                 transferUri = Uri.fromFile(tempFile)
                 size = tempFile.length()
             } catch (e: Exception) {
