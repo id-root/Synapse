@@ -26,21 +26,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.synapse.lantransfer.data.model.TransferState
+import com.synapse.lantransfer.data.service.TransferManager
 import com.synapse.lantransfer.ui.components.GlassCard
-import com.synapse.lantransfer.ui.components.TransferOverlay
 import com.synapse.lantransfer.ui.screens.viewmodel.SendViewModel
 import com.synapse.lantransfer.ui.theme.*
 import com.synapse.lantransfer.util.formatBytes
-import com.synapse.lantransfer.util.formatSpeed
 
 @Composable
-fun SendScreen(viewModel: SendViewModel = viewModel()) {
+fun SendScreen(
+    viewModel: SendViewModel = rememberSendViewModel(),
+    transferManager: TransferManager? = null
+) {
     val selectedFiles by viewModel.selectedFiles.collectAsState()
     val isSending by viewModel.isBroadcasting.collectAsState()
     val senderPort by viewModel.senderPort.collectAsState()
-    val transferState by viewModel.transferState.collectAsState()
 
     // File picker launcher
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -52,10 +52,6 @@ fun SendScreen(viewModel: SendViewModel = viewModel()) {
     }
 
     val scrollState = rememberScrollState()
-
-    // Transfer overlay
-    val showOverlay = transferState is TransferState.Sending &&
-        (transferState as? TransferState.Sending)?.progress != null
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -383,22 +379,10 @@ fun SendScreen(viewModel: SendViewModel = viewModel()) {
 
             Spacer(modifier = Modifier.height(100.dp))
         }
-
-        // Transfer progress overlay
-        if (showOverlay) {
-            val progress = (transferState as? TransferState.Sending)?.progress
-            if (progress != null) {
-                TransferOverlay(
-                    fileName = progress.fileName,
-                    progress = progress.fraction,
-                    transferredBytes = formatBytes(progress.bytesTransferred),
-                    totalBytes = formatBytes(progress.totalBytes),
-                    speed = formatSpeed(progress.speed),
-                    isVisible = true,
-                    onCancel = { viewModel.stopBroadcasting() },
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
-            }
-        }
     }
+}
+
+@Composable
+private fun rememberSendViewModel(): SendViewModel {
+    return androidx.lifecycle.viewmodel.compose.viewModel()
 }
