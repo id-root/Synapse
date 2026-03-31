@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, X, Monitor } from 'lucide-react'
 import { ToastProvider } from './hooks/useToast'
 import Toast from './components/Toast'
 import Sidebar from './components/Sidebar'
@@ -10,7 +9,6 @@ import ReceiveTab from './tabs/ReceiveTab'
 import HistoryTab from './tabs/HistoryTab'
 import SettingsTab from './tabs/SettingsTab'
 import styles from './App.module.css'
-import overlayStyles from './components/TransferOverlay.module.css'
 
 function formatBytes(bytes) {
   if (!bytes || isNaN(bytes) || bytes === 0) return '0 B'
@@ -29,10 +27,8 @@ function AppInner() {
   const [isSending,    setIsSending]    = useState(false)
   const [senderPort,   setSenderPort]   = useState(null)
   const [transfer,     setTransfer]     = useState({ visible: false })
-  const [connRequest,  setConnRequest]  = useState({ visible: false, addr: '' })
   const speedRef = useRef({ time: 0, bytes: 0, text: '— B/s' })
 
-  // Load device info
   useEffect(() => {
     (async () => {
       try {
@@ -42,7 +38,6 @@ function AppInner() {
     })()
   }, [])
 
-  // Wails events
   useEffect(() => {
     if (!window.runtime) return
 
@@ -57,18 +52,6 @@ function AppInner() {
       }),
       window.runtime.EventsOn('sender:error', () => {
         setIsSending(false)
-      }),
-      window.runtime.EventsOn('connection:request', addr => {
-        setConnRequest({ visible: true, addr })
-      }),
-      window.runtime.EventsOn('connection:accepted', () => {
-        setConnRequest({ visible: false, addr: '' })
-      }),
-      window.runtime.EventsOn('connection:rejected', () => {
-        setConnRequest({ visible: false, addr: '' })
-      }),
-      window.runtime.EventsOn('connection:timeout', () => {
-        setConnRequest({ visible: false, addr: '' })
       }),
       window.runtime.EventsOn('transfer:progress', data => {
         const total  = data.total_bytes || 0
@@ -114,20 +97,6 @@ function AppInner() {
     setTransfer({ visible: false })
   }
 
-  const acceptConnection = () => {
-    if (connRequest.addr) {
-      window.go?.gui?.App?.AcceptConnection?.(connRequest.addr)
-    }
-    setConnRequest({ visible: false, addr: '' })
-  }
-
-  const rejectConnection = () => {
-    if (connRequest.addr) {
-      window.go?.gui?.App?.RejectConnection?.(connRequest.addr)
-    }
-    setConnRequest({ visible: false, addr: '' })
-  }
-
   const direction = TAB_ORDER.indexOf(activeTab) > TAB_ORDER.indexOf(prevTab) ? 1 : -1
 
   const tabs = {
@@ -144,7 +113,6 @@ function AppInner() {
 
   return (
     <div className={styles.app}>
-      {/* Background mesh orbs */}
       <div className="bg-mesh">
         <div className="bg-orb bg-orb-1" style={{ background: 'radial-gradient(circle, #EED7BA, transparent 70%)' }} />
         <div className="bg-orb bg-orb-2" style={{ background: 'radial-gradient(circle, #D9E0E5, transparent 70%)' }} />
@@ -169,53 +137,6 @@ function AppInner() {
       </main>
 
       <TransferOverlay transfer={transfer} onCancel={cancelTransfer} />
-
-      <AnimatePresence>
-        {connRequest.visible && (
-          <motion.div
-            className={overlayStyles.overlay}
-            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.95 }}
-            transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-            style={{ zIndex: 9998 }}
-          >
-            <div className={overlayStyles.header}>
-              <div className={overlayStyles.headerLeft}>
-                <div className={overlayStyles.dirIcon}>
-                  <Monitor size={15} />
-                </div>
-                <div>
-                  <div className={overlayStyles.title}>Incoming Connection</div>
-                  <div className={overlayStyles.speed}>{connRequest.addr}</div>
-                </div>
-              </div>
-            </div>
-            <div className={overlayStyles.body}>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', margin: 0 }}>
-                A device wants to send you files. Accept the transfer?
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={rejectConnection}
-                style={{ flex: 1 }}
-              >
-                <X size={14} /> Reject
-              </button>
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={acceptConnection}
-                style={{ flex: 1 }}
-              >
-                <Check size={14} /> Accept
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       <Toast />
     </div>
   )
