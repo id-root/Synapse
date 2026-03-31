@@ -142,7 +142,7 @@ class LanService(private val context: Context) {
                 }
 
                 if (header.isArchive) {
-                    throw IOException("Archive/directory transfers are not yet supported on Android")
+                    Log.d(TAG, "Archive transfer detected. Will save as .zip file.")
                 }
 
                 // Step 2: Determine resume offset and prepare output stream
@@ -435,7 +435,7 @@ class SenderSession(
 
         if (isArchive) {
             Log.d("SenderSession", "Zipping ${uris.size} files for transfer...")
-            tempFile = File(context.cacheDir, "synapse_transfer_${System.currentTimeMillis()}.zip")
+            tempFile = File(context.externalCacheDir ?: context.cacheDir, "synapse_transfer_${System.currentTimeMillis()}.zip")
             name = "Synapse_Transfer.zip"
             
             try {
