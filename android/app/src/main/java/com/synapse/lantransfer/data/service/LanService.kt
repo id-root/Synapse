@@ -77,6 +77,7 @@ class LanService(private val context: Context) {
         val serverSocketFactory = sslContext.serverSocketFactory
         val serverSocket = serverSocketFactory.createServerSocket(0) as SSLServerSocket
         serverSocket.soTimeout = 0  // Block indefinitely on accept
+        serverSocket.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
 
         val port = serverSocket.localPort
         Log.d(TAG, "Sender listening on port $port")
@@ -398,8 +399,10 @@ class SenderSession(
     suspend fun acceptAndTransfer() = withContext(Dispatchers.IO) {
         try {
             val socket = serverSocket.accept() as SSLSocket
+            socket.useClientMode = false
+            socket.startHandshake()
             val peerAddr = socket.remoteSocketAddress.toString()
-            Log.d("SenderSession", "Peer connected: $peerAddr")
+            Log.d("SenderSession", "Peer connected and handshake complete: $peerAddr")
             onPeerConnected(peerAddr)
 
             try {
