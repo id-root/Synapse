@@ -118,7 +118,7 @@ class LanService(private val context: Context) {
             val sslContext = createTrustAllSSLContext()
             val socketFactory = sslContext.socketFactory
             val socket = socketFactory.createSocket() as SSLSocket
-            socket.connect(InetSocketAddress(address, port), 10_000)
+            socket.connect(InetSocketAddress(address, port), 30_000)
             socket.startHandshake()
 
             Log.d(TAG, "TLS handshake complete with $address:$port")
