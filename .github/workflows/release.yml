@@ -1,207 +1,207 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  push:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: write
+  contents: write
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
 
-      - name: Install Linux Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
 
-      - name: Create Dummy Dist for Go Embed
-        run: |
-          mkdir -p frontend/dist
-          touch frontend/dist/placeholder.txt
+      - name: Create Dummy Dist for Go Embed
+        run: |
+          mkdir -p frontend/dist
+          touch frontend/dist/placeholder.txt
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Install Wails CLI
-        run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@latest
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+      - name: Install Wails CLI
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      - name: Build Linux Binary
-        run: wails build -tags webkit2_41 -platform linux/amd64
+      - name: Build Linux Binary
+        run: wails build -tags webkit2_41 -platform linux/amd64
 
-      - name: Compress Binary
-        run: |
-          cd build/bin
-          tar -czf synapse-linux-amd64.tar.gz synapse
-          
-      - name: Upload Linux Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: synapse-linux-amd64
-          path: build/bin/synapse-linux-amd64.tar.gz
+      - name: Compress Binary
+        run: |
+          cd build/bin
+          tar -czf synapse-linux-amd64.tar.gz synapse
+          
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: synapse-linux-amd64
+          path: build/bin/synapse-linux-amd64.tar.gz
 
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Install NSIS
-        shell: pwsh
-        run: |
-          choco install nsis -y
-          # Add NSIS to PATH for subsequent steps
-          $nsisPath = "C:\Program Files (x86)\NSIS"
-          echo "$nsisPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          Write-Host "NSIS installed at: $nsisPath"
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis -y
+          # Add NSIS to PATH for subsequent steps
+          $nsisPath = "C:\Program Files (x86)\NSIS"
+          echo "$nsisPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "NSIS installed at: $nsisPath"
 
-      - name: Install Wails CLI
-        run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@latest
-          $goBin = "$(go env GOPATH)\bin"
-          echo "$goBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        shell: pwsh
+      - name: Install Wails CLI
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          $goBin = "$(go env GOPATH)\bin"
+          echo "$goBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
 
-      - name: Create Dummy Dist for Go Embed
-        run: |
-          New-Item -ItemType Directory -Force -Path frontend\dist
-          New-Item -ItemType File -Force -Path frontend\dist\placeholder.txt
-        shell: pwsh
+      - name: Create Dummy Dist for Go Embed
+        run: |
+          New-Item -ItemType Directory -Force -Path frontend\dist
+          New-Item -ItemType File -Force -Path frontend\dist\placeholder.txt
+        shell: pwsh
 
-      - name: Verify NSIS is available
-        shell: pwsh
-        run: |
-          $makensis = Get-Command makensis -ErrorAction SilentlyContinue
-          if ($makensis) {
-            Write-Host "makensis found at: $($makensis.Source)"
-          } else {
-            Write-Error "makensis not found in PATH! Installer will not be built."
-            exit 1
-          }
+      - name: Verify NSIS is available
+        shell: pwsh
+        run: |
+          $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+          if ($makensis) {
+            Write-Host "makensis found at: $($makensis.Source)"
+          } else {
+            Write-Error "makensis not found in PATH! Installer will not be built."
+            exit 1
+          }
 
-      - name: Build Windows Portable + Installer
-        shell: pwsh
-        run: |
-          # Build both portable .exe and NSIS installer
-          wails build -platform windows/amd64 -nsis
+      - name: Build Windows Portable + Installer
+        shell: pwsh
+        run: |
+          # Build both portable .exe and NSIS installer
+          wails build -platform windows/amd64 -nsis
 
-      - name: Package portable binary as zip
-        shell: pwsh
-        run: Compress-Archive -Path build\bin\synapse.exe -DestinationPath build\bin\synapse-windows-amd64.zip
+      - name: Package portable binary as zip
+        shell: pwsh
+        run: Compress-Archive -Path build\bin\synapse.exe -DestinationPath build\bin\synapse-windows-amd64.zip
 
-      - name: List build output
-        shell: pwsh
-        run: Get-ChildItem build\bin\ | Format-Table Name, Length
+      - name: List build output
+        shell: pwsh
+        run: Get-ChildItem build\bin\ | Format-Table Name, Length
 
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: synapse-windows-amd64
-          path: |
-            build/bin/synapse-windows-amd64.zip
-            build/bin/synapse-amd64-installer.exe
- 
-  build-android:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: synapse-windows-amd64
+          path: |
+            build/bin/synapse-windows-amd64.zip
+            build/bin/synapse-amd64-installer.exe
+ 
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x android/gradlew
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
 
-      - name: Build Android APK
-        run: |
-          cd android
-          ./gradlew assembleRelease
+      - name: Build Android APK
+        run: |
+          cd android
+          ./gradlew assembleRelease
 
-      - name: Rename APK
-        run: mv android/app/build/outputs/apk/release/app-release.apk android/app/build/outputs/apk/release/synapse.apk
+      - name: Rename APK
+        run: mv android/app/build/outputs/apk/release/app-release.apk android/app/build/outputs/apk/release/synapse.apk
 
-      - name: Upload Android Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: synapse-android-apk
-          path: android/app/build/outputs/apk/release/synapse.apk
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: synapse-android-apk
+          path: android/app/build/outputs/apk/release/synapse.apk
 
 
-  release:
-    needs: [build-linux, build-windows, build-android]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  release:
+    needs: [build-linux, build-windows, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Download Linux Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: synapse-linux-amd64
-          path: artifacts
+      - name: Download Linux Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: synapse-linux-amd64
+          path: artifacts
 
-      - name: Download Windows Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: synapse-windows-amd64
-          path: artifacts
- 
-      - name: Download Android Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: synapse-android-apk
-          path: artifacts
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: synapse-windows-amd64
+          path: artifacts
+ 
+      - name: Download Android Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: synapse-android-apk
+          path: artifacts
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Synapse ${{ github.ref_name }}
-          body: |
-            ## Synapse ${{ github.ref_name }}
-            
-            Peer-to-peer encrypted file transfer with a premium React-powered GUI.
-            
-            ### Downloads
-            | Platform | File | Notes |
-            |----------|------|-------|
-            | 🐧 **Linux** | `synapse-linux-amd64.tar.gz` | Extract and run `./synapse` |
-            | 🪟 **Windows (Installer)** | `synapse-amd64-installer.exe` | Recommended — setup wizard |
-            | 🪟 **Windows (Portable)** | `synapse-windows-amd64.zip` | Extract and run `synapse.exe` |
-            | 📱 **Android** | `synapse.apk` | Sideload on Android 8.0+ |
-            
-            ### Requirements
-            - **Linux**: `sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0`
-            - **Windows**: WebView2 Runtime (pre-installed on Windows 10/11)
-            - **Android**: Enable "Install from unknown sources"
-          files: artifacts/**/*
-          draft: false
-          prerelease: false
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Synapse ${{ github.ref_name }}
+          body: |
+            ## Synapse ${{ github.ref_name }}
+            
+            Peer-to-peer encrypted file transfer with a premium React-powered GUI.
+            
+            ### Downloads
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | 🐧 **Linux** | `synapse-linux-amd64.tar.gz` | Extract and run `./synapse` |
+            | 🪟 **Windows (Installer)** | `synapse-amd64-installer.exe` | Recommended — setup wizard |
+            | 🪟 **Windows (Portable)** | `synapse-windows-amd64.zip` | Extract and run `synapse.exe` |
+            | 📱 **Android** | `synapse.apk` | Sideload on Android 8.0+ |
+            
+            ### Requirements
+            - **Linux**: `sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0`
+            - **Windows**: WebView2 Runtime (pre-installed on Windows 10/11)
+            - **Android**: Enable "Install from unknown sources"
+          files: artifacts/**/*
+          draft: false
+          prerelease: false
