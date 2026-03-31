@@ -21,27 +21,27 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.synapse.lantransfer.data.service.TransferManager
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.synapse.lantransfer.data.model.TransferState
 import com.synapse.lantransfer.ui.components.GlassCard
 import com.synapse.lantransfer.ui.components.RadarBlip
 import com.synapse.lantransfer.ui.components.RadarDisplay
+import com.synapse.lantransfer.ui.components.TransferOverlay
 import com.synapse.lantransfer.ui.screens.viewmodel.ReceiveViewModel
 import com.synapse.lantransfer.ui.theme.*
 import com.synapse.lantransfer.util.formatBytes
+import com.synapse.lantransfer.util.formatSpeed
 
 @Composable
-fun ReceiveScreen(
-    viewModel: ReceiveViewModel = rememberReceiveViewModel(),
-    transferManager: TransferManager? = null
-) {
+fun ReceiveScreen(viewModel: ReceiveViewModel = viewModel()) {
     val scanning by viewModel.isScanning.collectAsState()
     val hasScanned by viewModel.hasScanned.collectAsState()
     val peers by viewModel.discoveredPeers.collectAsState()
     val connectingTo by viewModel.connectingTo.collectAsState()
+    val transferState by viewModel.transferState.collectAsState()
 
     val scrollState = rememberScrollState()
 
-    // Spin animation for scan button
     val infiniteTransition = rememberInfiniteTransition(label = "spin")
     val spinRotation by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -53,6 +53,9 @@ fun ReceiveScreen(
         label = "spinRotation"
     )
 
+    val showOverlay = transferState is TransferState.Receiving &&
+        (transferState as? TransferState.Receiving)?.progress != null
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -60,7 +63,6 @@ fun ReceiveScreen(
                 .verticalScroll(scrollState)
                 .padding(20.dp)
         ) {
-            // Header
             Text(
                 text = "Receive Files",
                 style = SynapseTypography.displayLarge,
@@ -74,7 +76,6 @@ fun ReceiveScreen(
                 modifier = Modifier.padding(bottom = 24.dp)
             )
 
-            // Radar Section
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -89,10 +90,9 @@ fun ReceiveScreen(
                 ) {
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Radar visualization with blips for discovered peers
                     val blips = if (scanning || peers.isNotEmpty()) {
                         peers.mapIndexed { index, peer ->
-                            val angle = (index * 137.5f) % 360f  // Golden angle distribution
+                            val angle = (index * 137.5f) % 360f
                             val distance = 0.3f + (index * 0.15f).coerceAtMost(0.7f)
                             RadarBlip(angle, distance, peer.name)
                         }
@@ -105,7 +105,6 @@ fun ReceiveScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Status text
                     Text(
                         text = when {
                             scanning -> "Scanning via mDNS..."
@@ -120,7 +119,6 @@ fun ReceiveScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Scan Button
                     Button(
                         onClick = { viewModel.startScan() },
                         enabled = !scanning,
@@ -171,7 +169,6 @@ fun ReceiveScreen(
                 }
             }
 
-            // Peer Cards
             if (peers.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -221,7 +218,6 @@ fun ReceiveScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            // Peer avatar
                             Box(
                                 modifier = Modifier
                                     .size(44.dp)
@@ -252,9 +248,9 @@ fun ReceiveScreen(
                             }
 
                             Button(
-                                onClick = { 
+                                onClick = {
                                     if (viewModel.autoAccept.value) {
-                                        viewModel.connectToPeer(peer) 
+                                        viewModel.connectToPeer(peer)
                                     } else {
                                         viewModel.requestAccept(peer)
                                     }
@@ -288,7 +284,6 @@ fun ReceiveScreen(
                 }
             }
 
-            // Empty state
             if (hasScanned && peers.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -314,24 +309,45 @@ fun ReceiveScreen(
             Spacer(modifier = Modifier.height(100.dp))
         }
 
-        // Auto Accept Dialog
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding()
+        ) {
+            if (showOverlay) {
+                val progress = (transferState as? TransferState.Receiving)?.progress
+                if (progress != null) {
+                    TransferOverlay(
+                        fileName = progress.fileName,
+                        progress = progress.fraction,
+                        transferredBytes = formatBytes(progress.bytesTransferred),
+                        totalBytes = formatBytes(progress.totalBytes),
+                        speed = formatSpeed(progress.speed),
+                        isVisible = true,
+                        onCancel = { viewModel.cancelReceive() },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
+        }
+
         val pendingPeer by viewModel.pendingPeerRequest.collectAsState()
         if (pendingPeer != null) {
             AlertDialog(
                 onDismissRequest = { viewModel.declineAccept() },
-                title = { 
+                title = {
                     Text(
-                        "Accept Transfer", 
+                        "Accept Transfer",
                         style = SynapseTypography.titleLarge,
                         color = TextPrimary
-                    ) 
+                    )
                 },
-                text = { 
+                text = {
                     Text(
                         "Do you want to accept files from ${pendingPeer!!.name} (${pendingPeer!!.fullAddress})?",
                         style = SynapseTypography.bodyMedium,
                         color = TextSecondary
-                    ) 
+                    )
                 },
                 confirmButton = {
                     TextButton(onClick = { viewModel.confirmAccept() }) {
@@ -350,9 +366,4 @@ fun ReceiveScreen(
             )
         }
     }
-}
-
-@Composable
-private fun rememberReceiveViewModel(): ReceiveViewModel {
-    return androidx.lifecycle.viewmodel.compose.viewModel()
 }
