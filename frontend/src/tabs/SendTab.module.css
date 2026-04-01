@@ -1,0 +1,154 @@
+.tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 1.25rem;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* Drop Zone */
+.dropZone {
+  border: 1.5px dashed var(--border-default);
+  border-radius: var(--r-xl);
+  background: rgba(0, 0, 0, 0.02);
+  padding: 3rem 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+.dropZone:hover {
+  border-color: var(--border-strong);
+  background: rgba(0, 0, 0, 0.04);
+}
+.dragOver {
+  border-color: var(--accent-1) !important;
+  background: var(--accent-subtle) !important;
+}
+
+.dropIcon {
+  color: var(--accent-1);
+  opacity: 0.8;
+}
+
+.dropActions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+/* File list */
+.fileSection { display: flex; flex-direction: column; gap: 0.625rem; }
+
+.fileHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fileList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.fileItem {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  transition: border-color 0.15s;
+}
+.fileItem:hover { border-color: var(--border-default); }
+
+.fileIcon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.fileDetails { flex: 1; min-width: 0; }
+
+.fileName {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fileSize {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* Action Bar */
+.actionBar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  padding: 1rem 1.25rem;
+  margin-top: auto;
+}
+
+.readyBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sendingStatus {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.pulseWrap {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.pulseRing {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: var(--accent-1);
+  opacity: 0.3;
+}
+
+.pulseDot {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--accent-1);
+}
+
+.sendingLabel {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.portLabel {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--accent-1);
+}
