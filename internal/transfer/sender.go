@@ -470,6 +470,57 @@ func walkDirSize(path string, total *int64) error {
 }
 
 func handleStreamingTransfer(conn net.Conn, inputPaths []string, originalName string, totalSize int64, opts transferOptions) error {
+	// We use CompressionChunked to stream the zip archive.
+	// This means the receiver will use ChunkedReader which reads length-prefixed
+	// chunks and detects EOF when a zero-length chunk is sent.
+	// This avoids the problem where header.Size doesn't match the actual zip size.
+
+	header := FileHeader{
+		Name:        filepath.Base(originalName),
+		Size:        totalSize, // Approximate — receiver uses chunked framing, not Size, to detect EOF
+		IsArchive:   true,
+		Compression: CompressionChunked,
+	}
+
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		return fmt.Errorf("failed to marshal header: %w", err)
+	}
+
+	if err := binary.Write(conn, binary.BigEndian, int64(len(headerBytes))); err != nil {
+		return fmt.Errorf("failed to write header length: %w", err)
+	}
+
+	if _, err := conn.Write(headerBytes); err != nil {
+		return fmt.Errorf("failed to send header: %w", err)
+	}
+
+	var reqLen int64
+	if err := binary.Read(conn, binary.BigEndian, &reqLen); err != nil {
+		return fmt.Errorf("failed to read request length: %w", err)
+	}
+
+	reqBytes := make([]byte, reqLen)
+	if _, err := io.ReadFull(conn, reqBytes); err != nil {
+		return fmt.Errorf("failed to read request JSON: %w", err)
+	}
+
+	var req TransferRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		return fmt.Errorf("failed to unmarshal request: %w", err)
+	}
+
+	if req.Offset > 0 {
+		ui.Info("Resuming not supported for streaming transfers, starting from beginning")
+	}
+
+	hasher := sha256.New()
+	destination := io.MultiWriter(conn, hasher)
+
+	// Wrap destination in a ChunkedWriter so the receiver knows where the stream ends
+	chunkedW := NewChunkedWriter(destination)
+
+	// Pipe: zip writes into the pipe, we read from the pipe and send through chunked writer
 	reader, writer := io.Pipe()
 	var zipErr error
 	var zipWg sync.WaitGroup
@@ -480,60 +531,6 @@ func handleStreamingTransfer(conn net.Conn, inputPaths []string, originalName st
 		defer writer.Close()
 		zipErr = zipPaths(inputPaths, writer)
 	}()
-
-	header := FileHeader{
-		Name:        filepath.Base(originalName),
-		Size:        totalSize,
-		IsArchive:   true,
-		Compression: CompressionNone,
-	}
-
-	headerBytes, err := json.Marshal(header)
-	if err != nil {
-		reader.Close()
-		zipWg.Wait()
-		return fmt.Errorf("failed to marshal header: %w", err)
-	}
-
-	if err := binary.Write(conn, binary.BigEndian, int64(len(headerBytes))); err != nil {
-		reader.Close()
-		zipWg.Wait()
-		return fmt.Errorf("failed to write header length: %w", err)
-	}
-
-	if _, err := conn.Write(headerBytes); err != nil {
-		reader.Close()
-		zipWg.Wait()
-		return fmt.Errorf("failed to send header: %w", err)
-	}
-
-	var reqLen int64
-	if err := binary.Read(conn, binary.BigEndian, &reqLen); err != nil {
-		reader.Close()
-		zipWg.Wait()
-		return fmt.Errorf("failed to read request length: %w", err)
-	}
-
-	reqBytes := make([]byte, reqLen)
-	if _, err := io.ReadFull(conn, reqBytes); err != nil {
-		reader.Close()
-		zipWg.Wait()
-		return fmt.Errorf("failed to read request JSON: %w", err)
-	}
-
-	var req TransferRequest
-	if err := json.Unmarshal(reqBytes, &req); err != nil {
-		reader.Close()
-		zipWg.Wait()
-		return fmt.Errorf("failed to unmarshal request: %w", err)
-	}
-
-	if req.Offset > 0 {
-		ui.Info("Resuming not supported for streaming transfers, starting from beginning")
-	}
-
-	hasher := sha256.New()
-	destination := io.MultiWriter(conn, hasher)
 
 	var progressInput io.Reader
 	if opts.onProgress != nil {
@@ -550,11 +547,18 @@ func handleStreamingTransfer(conn net.Conn, inputPaths []string, originalName st
 	}
 
 	buf := make([]byte, 4*1024*1024)
-	_, err = io.CopyBuffer(destination, progressInput, buf)
+	_, err = io.CopyBuffer(chunkedW, progressInput, buf)
 	if err != nil {
 		reader.Close()
 		zipWg.Wait()
 		return fmt.Errorf("failed to stream archive: %w", err)
+	}
+
+	// Close the chunked writer to send the zero-length EOF marker
+	if err := chunkedW.Close(); err != nil {
+		reader.Close()
+		zipWg.Wait()
+		return fmt.Errorf("failed to close chunked writer: %w", err)
 	}
 
 	zipWg.Wait()
@@ -570,3 +574,4 @@ func handleStreamingTransfer(conn net.Conn, inputPaths []string, originalName st
 	fmt.Println()
 	return nil
 }
+
