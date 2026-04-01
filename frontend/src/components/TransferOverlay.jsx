@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, Upload, Download, Zap } from 'lucide-react'
+import { X, Upload, Download, Zap, Archive } from 'lucide-react'
 import styles from './TransferOverlay.module.css'
 
 function CircularProgress({ percent }) {
@@ -39,6 +39,7 @@ function CircularProgress({ percent }) {
 
 export default function TransferOverlay({ transfer, onCancel }) {
   const { visible, title, fileName, speed, percent, bytesSent, totalBytes, direction } = transfer || {}
+  const isArchive = fileName && (fileName.endsWith('.zip') || fileName === 'Synapse_Transfer.zip')
 
   return (
     <AnimatePresence>
@@ -68,6 +69,14 @@ export default function TransferOverlay({ transfer, onCancel }) {
               <X size={15} />
             </button>
           </div>
+
+          {/* Status badge */}
+          {isArchive && percent < 100 && (
+            <div className={styles.statusBadge}>
+              <Archive size={12} />
+              <span>Archiving & Sending</span>
+            </div>
+          )}
 
           {/* Body */}
           <div className={styles.body}>
