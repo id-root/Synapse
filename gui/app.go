@@ -181,6 +181,7 @@ func (a *App) StartSending(filePaths []string) error {
 					"total_bytes": info.TotalBytes,
 					"file_name":   info.FileName,
 					"peer_addr":   info.PeerAddr,
+					"peer_name":   info.PeerName,
 					"direction":   "send",
 				})
 			},
@@ -330,7 +331,7 @@ func (a *App) ScanPeers() []PeerInfo {
 }
 
 // ConnectToReceive connects to a peer to receive a file
-func (a *App) ConnectToReceive(address string) error {
+func (a *App) ConnectToReceive(address string, peerName string) error {
 	downloadDir := a.settings.DownloadDir
 	if downloadDir == "" {
 		downloadDir = "received_files"
@@ -339,12 +340,15 @@ func (a *App) ConnectToReceive(address string) error {
 	go func() {
 		opts := transfer.ReceiverOptions{
 			DownloadDir: downloadDir,
+			PeerName:    a.settings.DeviceName,
+			SenderName:  peerName,
 			OnProgress: func(info transfer.ProgressInfo) {
 				wailsRuntime.EventsEmit(a.ctx, "transfer:progress", map[string]interface{}{
 					"bytes_sent":  info.BytesSent,
 					"total_bytes": info.TotalBytes,
 					"file_name":   info.FileName,
 					"peer_addr":   info.PeerAddr,
+					"peer_name":   info.PeerName,
 					"direction":   "receive",
 				})
 			},
@@ -353,12 +357,12 @@ func (a *App) ConnectToReceive(address string) error {
 				_ = addHistoryEntry(HistoryEntry{
 					FileName:  fileName,
 					Direction: "receive",
-					PeerName:  address,
+					PeerName:  peerName,
 					Status:    "completed",
 				})
 				wailsRuntime.EventsEmit(a.ctx, "transfer:complete", map[string]interface{}{
 					"file_name": fileName,
-					"peer_addr": address,
+					"peer_addr": peerName,
 					"direction": "receive",
 				})
 			},
@@ -366,13 +370,13 @@ func (a *App) ConnectToReceive(address string) error {
 				a.clearConn()
 				_ = addHistoryEntry(HistoryEntry{
 					Direction: "receive",
-					PeerName:  address,
+					PeerName:  peerName,
 					Status:    "failed",
 					Error:     err.Error(),
 				})
 				wailsRuntime.EventsEmit(a.ctx, "transfer:error", map[string]interface{}{
 					"error":     err.Error(),
-					"peer_addr": address,
+					"peer_addr": peerName,
 					"direction": "receive",
 				})
 			},
