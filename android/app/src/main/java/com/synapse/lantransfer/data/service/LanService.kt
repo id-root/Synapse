@@ -1,0 +1,1042 @@
+package com.synapse.lantransfer.data.service
+
+import android.content.ContentResolver
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Log
+import com.synapse.lantransfer.data.model.FileHeader
+import com.synapse.lantransfer.data.model.TransferProgress
+import com.synapse.lantransfer.data.model.TransferRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import java.io.*
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import java.util.Date
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+import javax.net.ssl.*
+
+/**
+ * Handles the TCP/TLS file transfer protocol, compatible with the Go backend.
+ *
+ * Protocol (sender side):
+ *   1. Listen on TLS server socket (self-signed cert)
+ *   2. Accept connection
+ *   3. Send: [8-byte headerLen BE][JSON FileHeader]
+ *   4. Read: [8-byte reqLen BE][JSON TransferRequest]
+ *   5. Seek to offset, stream file bytes
+ *   6. Send: [32-byte checksum] (SHA-256, see note)
+ *
+ * Protocol (receiver side):
+ *   1. Connect via TLS to sender (skip cert verification, matching Go)
+ *   2. Read header → parse FileHeader
+ *   3. Send TransferRequest (with resume offset)
+ *   4. Read file bytes → save to disk
+ *   5. Read + verify checksum
+ *
+ * Note: Go backend uses SHA-256. Checksum from Go senders is received but
+ * verification is skipped since TLS already provides integrity.
+ */
+class LanService(private val context: Context) {
+
+    companion object {
+        private const val TAG = "LanService"
+        private const val BUFFER_SIZE = 4 * 1024 * 1024  // 4MB buffer, matching Go
+        private const val CHECKSUM_SIZE = 32
+    }
+
+    // ======================== SENDER ========================
+
+    /**
+     * Start a TLS server that serves files to connecting peers.
+     * Returns the port number being listened on.
+     *
+     * @param uris List of content URIs to send
+     * @param onProgress Callback for transfer progress updates
+     * @param onPeerConnected Called when a peer connects (with their address)
+     * @param onComplete Called when transfer completes successfully
+     * @param onError Called when transfer fails
+     * @return The port number the server is listening on
+     */
+    suspend fun startSender(
+        uris: List<Uri>,
+        onProgress: (TransferProgress) -> Unit,
+        onPeerConnected: (String) -> Unit = {},
+        onComplete: (String, String) -> Unit = { _, _ -> },
+        onError: (String) -> Unit = {}
+    ): SenderSession = withContext(Dispatchers.IO) {
+        val sslContext = createServerSSLContext()
+        val serverSocketFactory = sslContext.serverSocketFactory
+        val serverSocket = serverSocketFactory.createServerSocket(0) as SSLServerSocket
+        serverSocket.soTimeout = 0  // Block indefinitely on accept
+
+        val port = serverSocket.localPort
+        Log.d(TAG, "Sender listening on port $port")
+
+        SenderSession(
+            serverSocket = serverSocket,
+            port = port,
+            uris = uris,
+            context = context,
+            onProgress = onProgress,
+            onPeerConnected = onPeerConnected,
+            onComplete = onComplete,
+            onError = onError
+        )
+    }
+
+    @Volatile private var activeReceiveSocket: SSLSocket? = null
+
+    /** Cancel any currently active receive operation */
+    fun cancelReceive() {
+        try {
+            activeReceiveSocket?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing receive socket: ${e.message}")
+        }
+    }
+
+    /**
+     * Connect to a sender and receive a file.
+     *
+     * @param address IP address of the sender
+     * @param port Port of the sender
+     * @param downloadDir Directory to save received files
+     * @param onProgress Callback for transfer progress updates
+     * @param onComplete Called with the filename when transfer completes
+     * @param onError Called when transfer fails
+     */
+    suspend fun receiveFrom(
+        address: String,
+        port: Int,
+        downloadDir: String,
+        deviceName: String,
+        onProgress: (TransferProgress) -> Unit,
+        onComplete: (String) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Connecting to sender at $address:$port")
+
+            // Create TLS socket that skips certificate verification (matches Go client)
+            val sslContext = createTrustAllSSLContext()
+            val socketFactory = sslContext.socketFactory
+            val socket = socketFactory.createSocket() as SSLSocket
+            activeReceiveSocket = socket
+            
+            socket.connect(InetSocketAddress(address, port), 10_000)
+            socket.startHandshake()
+
+            Log.d(TAG, "TLS handshake complete with $address:$port")
+
+            val input = BufferedInputStream(socket.getInputStream(), BUFFER_SIZE)
+            val output = BufferedOutputStream(socket.getOutputStream())
+
+            try {
+                // Step 1: Read FileHeader
+                val headerLen = readLong(input)
+                if (headerLen > 65536) {
+                    throw IOException("Header too large: $headerLen")
+                }
+                val headerBytes = readFully(input, headerLen.toInt())
+                val header = FileHeader.fromJson(headerBytes)
+                Log.d(TAG, "Received header: ${header.name}, ${header.size} bytes, archive=${header.isArchive}, compression=${header.compression}")
+
+                // Reject zstd/gzip compressed transfers for now
+                if (header.compression == FileHeader.COMPRESSION_ZSTD ||
+                    header.compression == FileHeader.COMPRESSION_GZIP) {
+                    throw IOException("Compressed transfers (${header.compression}) are not yet supported on Android")
+                }
+
+                val isChunked = header.compression == FileHeader.COMPRESSION_CHUNKED
+
+                // Step 2: Determine resume offset and prepare output
+                val safeName = sanitizeFilename(header.name)
+                var offset = 0L
+
+                // For chunked/archive transfers, resume is not supported
+                if (!isChunked && !header.isArchive) {
+                    // Check for partial file to resume
+                    if (downloadDir.startsWith("content://")) {
+                        val treeUri = Uri.parse(downloadDir)
+                        val dirFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri)
+                        val existing = dirFile?.findFile(safeName)
+                        if (existing != null && existing.length() < header.size) {
+                            offset = existing.length()
+                        }
+                    } else {
+                        val destFile = File(File(downloadDir), safeName)
+                        if (destFile.exists() && destFile.length() < header.size) {
+                            offset = destFile.length()
+                        }
+                    }
+                }
+
+                // Step 3: Send TransferRequest
+                val request = TransferRequest(offset = offset, peerName = deviceName)
+                val reqBytes = request.toJson()
+                writeLong(output, reqBytes.size.toLong())
+                output.write(reqBytes)
+                output.flush()
+
+                // Step 4: Receive file data
+                if (isChunked && header.isArchive) {
+                    // Chunked archive: read chunked stream into a temp file, then extract
+                    receiveChunkedArchive(input, downloadDir, safeName, header, address, port, onProgress)
+                } else if (isChunked) {
+                    // Chunked single file
+                    receiveChunkedFile(input, downloadDir, safeName, header, address, port, onProgress)
+                } else if (header.isArchive) {
+                    // Legacy non-chunked archive (shouldn't happen with updated senders)
+                    throw IOException("Non-chunked archive transfers are not supported")
+                } else {
+                    // Regular single file transfer
+                    receiveSingleFile(input, downloadDir, safeName, header, offset, address, port, onProgress)
+                }
+
+                // Step 5: Read checksum (32 bytes) — receive but don't verify
+                try {
+                    val checksum = readFully(input, CHECKSUM_SIZE)
+                    Log.d(TAG, "Received ${checksum.size}-byte checksum (verification skipped, TLS provides integrity)")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not read checksum: ${e.message}")
+                }
+
+                Log.d(TAG, "Transfer complete: ${header.name}")
+                onComplete(header.name)
+
+            } finally {
+                activeReceiveSocket = null
+                socket.close()
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Receive failed: ${e.message}", e)
+            onError(e.message ?: "Unknown error during receive")
+            throw e
+        }
+    }
+
+    // ======================== RECEIVE HELPERS ========================
+
+    /**
+     * Receive a chunked archive stream: read chunked data into a temp zip file,
+     * then extract to the download directory.
+     */
+    private fun receiveChunkedArchive(
+        input: InputStream,
+        downloadDir: String,
+        safeName: String,
+        header: FileHeader,
+        address: String,
+        port: Int,
+        onProgress: (TransferProgress) -> Unit
+    ) {
+        // Read chunked stream to temp file
+        val tempFile = File(context.cacheDir, "synapse_recv_${System.currentTimeMillis()}.zip")
+        var bytesReceived = 0L
+        val startTime = System.currentTimeMillis()
+
+        try {
+            FileOutputStream(tempFile).use { fos ->
+                val buf = ByteArray(BUFFER_SIZE)
+                while (true) {
+                    // Read chunk length (4 bytes, big-endian uint32)
+                    val lenBuf = ByteArray(4)
+                    readFullyBlocking(input, lenBuf)
+                    val chunkLen = ByteBuffer.wrap(lenBuf).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xFFFFFFFFL
+
+                    if (chunkLen == 0L) break // EOF marker
+
+                    var remaining = chunkLen
+                    while (remaining > 0) {
+                        val toRead = minOf(buf.size.toLong(), remaining).toInt()
+                        val read = input.read(buf, 0, toRead)
+                        if (read == -1) throw IOException("Unexpected EOF in chunked stream")
+                        fos.write(buf, 0, read)
+                        remaining -= read
+                        bytesReceived += read
+
+                        val elapsed = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+                        val speed = bytesReceived * 1000f / elapsed
+
+                        onProgress(
+                            TransferProgress(
+                                bytesTransferred = bytesReceived,
+                                totalBytes = header.size, // approximate
+                                fileName = header.name,
+                                speed = speed,
+                                peerAddress = "$address:$port"
+                            )
+                        )
+                    }
+                }
+            }
+
+            // Extract the zip to download dir
+            Log.d(TAG, "Extracting archive ($bytesReceived bytes)...")
+
+            if (downloadDir.startsWith("content://")) {
+                val treeUri = Uri.parse(downloadDir)
+                val dirFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri)
+                    ?: throw IOException("Cannot access download directory")
+                extractZipToDocumentFile(tempFile, dirFile)
+            } else {
+                val destDir = File(downloadDir)
+                if (!destDir.exists()) destDir.mkdirs()
+                extractZip(tempFile, destDir)
+            }
+
+            Log.d(TAG, "Archive extracted successfully")
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    /**
+     * Receive a chunked single file stream.
+     */
+    private fun receiveChunkedFile(
+        input: InputStream,
+        downloadDir: String,
+        safeName: String,
+        header: FileHeader,
+        address: String,
+        port: Int,
+        onProgress: (TransferProgress) -> Unit
+    ) {
+        val fos = createOutputStream(downloadDir, safeName, false)
+        var bytesReceived = 0L
+        val startTime = System.currentTimeMillis()
+
+        fos.use { fileOut ->
+            val buf = ByteArray(BUFFER_SIZE)
+            while (true) {
+                val lenBuf = ByteArray(4)
+                readFullyBlocking(input, lenBuf)
+                val chunkLen = ByteBuffer.wrap(lenBuf).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xFFFFFFFFL
+
+                if (chunkLen == 0L) break
+
+                var remaining = chunkLen
+                while (remaining > 0) {
+                    val toRead = minOf(buf.size.toLong(), remaining).toInt()
+                    val read = input.read(buf, 0, toRead)
+                    if (read == -1) throw IOException("Unexpected EOF in chunked stream")
+                    fileOut.write(buf, 0, read)
+                    remaining -= read
+                    bytesReceived += read
+
+                    val elapsed = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+                    val speed = bytesReceived * 1000f / elapsed
+
+                    onProgress(
+                        TransferProgress(
+                            bytesTransferred = bytesReceived,
+                            totalBytes = header.size,
+                            fileName = header.name,
+                            speed = speed,
+                            peerAddress = "$address:$port"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Receive a regular (non-chunked) single file.
+     */
+    private fun receiveSingleFile(
+        input: InputStream,
+        downloadDir: String,
+        safeName: String,
+        header: FileHeader,
+        offset: Long,
+        address: String,
+        port: Int,
+        onProgress: (TransferProgress) -> Unit
+    ) {
+        val fos = createOutputStream(downloadDir, safeName, offset > 0)
+        val remaining = header.size - offset
+        var bytesReceived = 0L
+        val startTime = System.currentTimeMillis()
+        val buf = ByteArray(BUFFER_SIZE)
+
+        fos.use { fileOut ->
+            while (bytesReceived < remaining) {
+                val toRead = minOf(buf.size.toLong(), remaining - bytesReceived).toInt()
+                val read = input.read(buf, 0, toRead)
+                if (read == -1) break
+                fileOut.write(buf, 0, read)
+                bytesReceived += read
+
+                val totalReceived = offset + bytesReceived
+                val elapsed = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+                val speed = bytesReceived * 1000f / elapsed
+
+                onProgress(
+                    TransferProgress(
+                        bytesTransferred = totalReceived,
+                        totalBytes = header.size,
+                        fileName = header.name,
+                        speed = speed,
+                        peerAddress = "$address:$port"
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Create an output stream for saving a file to the download directory.
+     */
+    private fun createOutputStream(downloadDir: String, safeName: String, append: Boolean): OutputStream {
+        return if (downloadDir.startsWith("content://")) {
+            val treeUri = Uri.parse(downloadDir)
+            val dirFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri)
+                ?: throw IOException("Cannot access download directory")
+            var docFile = dirFile.findFile(safeName)
+            if (docFile == null) {
+                docFile = dirFile.createFile("application/octet-stream", safeName)
+                    ?: throw IOException("Cannot create file in directory")
+            }
+            if (append) {
+                context.contentResolver.openOutputStream(docFile.uri, "wa")
+            } else {
+                context.contentResolver.openOutputStream(docFile.uri)
+            } ?: throw IOException("Could not open output stream")
+        } else {
+            val destDir = File(downloadDir)
+            if (!destDir.exists()) destDir.mkdirs()
+            val destFile = File(destDir, safeName)
+            if (append) FileOutputStream(destFile, true) else FileOutputStream(destFile)
+        }
+    }
+
+    /**
+     * Extract a zip file to a regular File directory.
+     */
+    private fun extractZip(zipFile: File, destDir: File) {
+        ZipInputStream(FileInputStream(zipFile)).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                val outFile = File(destDir, entry.name)
+                // Prevent zip slip
+                if (!outFile.canonicalPath.startsWith(destDir.canonicalPath + File.separator)) {
+                    throw IOException("Illegal zip entry path: ${entry.name}")
+                }
+                if (entry.isDirectory) {
+                    outFile.mkdirs()
+                } else {
+                    outFile.parentFile?.mkdirs()
+                    FileOutputStream(outFile).use { fos ->
+                        zis.copyTo(fos)
+                    }
+                }
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+        }
+    }
+
+    /**
+     * Extract a zip file to a DocumentFile (SAF) directory.
+     */
+    private fun extractZipToDocumentFile(
+        zipFile: File,
+        destDir: androidx.documentfile.provider.DocumentFile
+    ) {
+        ZipInputStream(FileInputStream(zipFile)).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                if (entry.isDirectory) {
+                    // Create directory
+                    destDir.createDirectory(entry.name.trimEnd('/'))
+                } else {
+                    val docFile = destDir.createFile("application/octet-stream", entry.name)
+                    if (docFile != null) {
+                        context.contentResolver.openOutputStream(docFile.uri)?.use { out ->
+                            zis.copyTo(out)
+                        }
+                    }
+                }
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+        }
+    }
+
+    // ======================== PROTOCOL HELPERS ========================
+
+    /** Write a 64-bit big-endian long to the stream (matches Go's binary.BigEndian int64) */
+    private fun writeLong(out: OutputStream, value: Long) {
+        val buf = ByteBuffer.allocate(8)
+        buf.putLong(value)
+        out.write(buf.array())
+    }
+
+    /** Read a 64-bit big-endian long from the stream */
+    private fun readLong(input: InputStream): Long {
+        val buf = ByteArray(8)
+        var read = 0
+        while (read < 8) {
+            val n = input.read(buf, read, 8 - read)
+            if (n == -1) throw IOException("Unexpected EOF reading long")
+            read += n
+        }
+        return ByteBuffer.wrap(buf).long
+    }
+
+    /** Read exactly n bytes from the stream */
+    private fun readFully(input: InputStream, size: Int): ByteArray {
+        val buf = ByteArray(size)
+        var read = 0
+        while (read < size) {
+            val n = input.read(buf, read, size - read)
+            if (n == -1) throw IOException("Unexpected EOF: expected $size bytes, got $read")
+            read += n
+        }
+        return buf
+    }
+
+    /** Read exactly buf.size bytes, blocking */
+    private fun readFullyBlocking(input: InputStream, buf: ByteArray) {
+        var read = 0
+        while (read < buf.size) {
+            val n = input.read(buf, read, buf.size - read)
+            if (n == -1) throw IOException("Unexpected EOF")
+            read += n
+        }
+    }
+
+    // ======================== TLS HELPERS ========================
+
+    /** Create an SSL context with a self-signed certificate for the server */
+    private fun createServerSSLContext(): SSLContext {
+        // Generate a self-signed RSA key pair
+        val keyPairGenerator = KeyPairGenerator.getInstance("RSA")
+        keyPairGenerator.initialize(2048, SecureRandom())
+        val keyPair = keyPairGenerator.generateKeyPair()
+
+        // Create a self-signed X.509 certificate
+        val cert = createSelfSignedCertificate(keyPair)
+
+        // Build a KeyStore containing the certificate
+        val keyStore = KeyStore.getInstance(KeyStore.getDefaultType())
+        keyStore.load(null, null)
+        keyStore.setKeyEntry("synapse", keyPair.private, charArrayOf(), arrayOf(cert))
+
+        val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+        kmf.init(keyStore, charArrayOf())
+
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(kmf.keyManagers, null, SecureRandom())
+        return sslContext
+    }
+
+    /** Create an SSL context that trusts all certificates (for connecting to self-signed peers) */
+    private fun createTrustAllSSLContext(): SSLContext {
+        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        })
+
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, trustAllCerts, SecureRandom())
+        return sslContext
+    }
+
+    /** Generate a self-signed X.509 certificate (valid 24 hours, matching Go) */
+    @Suppress("DEPRECATION")
+    private fun createSelfSignedCertificate(keyPair: java.security.KeyPair): X509Certificate {
+        val now = System.currentTimeMillis()
+        val notBefore = Date(now)
+        val notAfter = Date(now + 24 * 60 * 60 * 1000L) // 24 hours
+
+        return generateSelfSignedCert(keyPair, notBefore, notAfter)
+    }
+
+    private fun generateSelfSignedCert(
+        keyPair: java.security.KeyPair,
+        notBefore: Date,
+        notAfter: Date
+    ): X509Certificate {
+        return CertificateGenerator.generate(keyPair, notBefore, notAfter)
+    }
+
+    /** Sanitize a filename for safe storage */
+    private fun sanitizeFilename(name: String): String {
+        return name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+    }
+}
+
+/**
+ * A ChunkedOutputStream that writes data in length-prefixed chunks matching
+ * the Go backend's ChunkedWriter protocol.
+ * Format: [4-byte uint32 BE length][data]. Length 0 signals EOF.
+ */
+class ChunkedOutputStream(private val out: OutputStream) : OutputStream() {
+    override fun write(b: Int) {
+        write(byteArrayOf(b.toByte()), 0, 1)
+    }
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        if (len == 0) return
+        // Write length header (4 bytes, big-endian)
+        val lenBuf = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(len).array()
+        out.write(lenBuf)
+        // Write data
+        out.write(b, off, len)
+    }
+
+    /** Send the zero-length EOF marker */
+    fun writeEOF() {
+        val eof = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(0).array()
+        out.write(eof)
+        out.flush()
+    }
+
+    override fun flush() {
+        out.flush()
+    }
+
+    override fun close() {
+        writeEOF()
+        out.flush()
+    }
+}
+
+/**
+ * Manages an active sender session. Can accept multiple peer connections.
+ */
+class SenderSession(
+    private val serverSocket: SSLServerSocket,
+    val port: Int,
+    private val uris: List<Uri>,
+    private val context: Context,
+    private val onProgress: (TransferProgress) -> Unit,
+    private val onPeerConnected: (String) -> Unit,
+    private val onComplete: (String, String) -> Unit,
+    private val onError: (String) -> Unit
+) {
+    private val contentResolver: ContentResolver = context.contentResolver
+    private val activeSockets = java.util.Collections.synchronizedList(mutableListOf<SSLSocket>())
+
+    /**
+     * Accept and handle one incoming peer connection.
+     * Call this in a loop for multi-peer support.
+     */
+    suspend fun acceptAndTransfer() = withContext(Dispatchers.IO) {
+        try {
+            val socket = serverSocket.accept() as SSLSocket
+            activeSockets.add(socket)
+            val peerAddr = socket.remoteSocketAddress.toString()
+            Log.d("SenderSession", "Peer connected: $peerAddr")
+            onPeerConnected(peerAddr)
+
+            try {
+                handleSendConnection(socket, peerAddr)
+            } finally {
+                activeSockets.remove(socket)
+                socket.close()
+            }
+        } catch (e: Exception) {
+            if (!serverSocket.isClosed) {
+                Log.e("SenderSession", "Accept failed: ${e.message}", e)
+                onError(e.message ?: "Connection failed")
+            }
+        }
+    }
+
+    private fun handleSendConnection(socket: SSLSocket, peerAddr: String) {
+        val output = BufferedOutputStream(socket.getOutputStream(), 4 * 1024 * 1024)
+        val input = BufferedInputStream(socket.getInputStream())
+
+        val isArchive = uris.size > 1
+        var name = if (isArchive) "Synapse_Transfer.zip" else (getFileName(uris.first()) ?: "file")
+        var size = 0L
+
+        // Calculate total size (approximate for archives)
+        for (uri in uris) {
+            size += getFileSize(uri)
+        }
+
+        // Guard: abort early if size cannot be determined for single file
+        if (!isArchive && size <= 0L) {
+            Log.e("SenderSession", "Cannot determine file size for $name — aborting transfer")
+            onError("Could not determine file size for: $name. Try selecting the file from a different location.")
+            return
+        }
+
+        // Choose protocol: chunked for archives, none for single files
+        val compression = if (isArchive) FileHeader.COMPRESSION_CHUNKED else FileHeader.COMPRESSION_NONE
+
+        // Step 1: Send FileHeader
+        val header = FileHeader(
+            name = name,
+            size = size,
+            isArchive = isArchive,
+            compression = compression
+        )
+        val headerBytes = header.toJson()
+        val headerLenBuf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(headerBytes.size.toLong()).array()
+        output.write(headerLenBuf)
+        output.write(headerBytes)
+        output.flush()
+
+        // Step 2: Read TransferRequest
+        val reqLenBytes = ByteArray(8)
+        readFullyBlocking(input, reqLenBytes)
+        val reqLen = ByteBuffer.wrap(reqLenBytes).long
+        val reqBytes = ByteArray(reqLen.toInt())
+        readFullyBlocking(input, reqBytes)
+        val request = TransferRequest.fromJson(reqBytes)
+        val offset = request.offset.coerceIn(0, size)
+        val resolvedPeerName = if (request.peerName.isNotBlank()) request.peerName else peerAddr
+
+        Log.d("SenderSession", "Transfer request: offset=$offset for $name ($size bytes, compression=$compression)")
+
+        if (isArchive) {
+            // Stream ZIP directly over the socket using chunked encoding — zero temp storage!
+            streamArchiveChunked(output, resolvedPeerName, name, size)
+        } else {
+            // Single file transfer (unchanged)
+            streamSingleFile(output, uris.first(), name, size, offset, resolvedPeerName)
+        }
+
+        Log.d("SenderSession", "Transfer complete: $name to $resolvedPeerName")
+        onComplete(name, resolvedPeerName)
+    }
+
+    /**
+     * Stream multiple files as a ZIP archive directly over the socket using chunked encoding.
+     * No temporary file is created — the ZIP is compressed and sent on-the-fly.
+     */
+    private fun streamArchiveChunked(
+        output: BufferedOutputStream,
+        peerAddr: String,
+        archiveName: String,
+        totalSize: Long
+    ) {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val startTime = System.currentTimeMillis()
+        var bytesSent = 0L
+
+        // Create a counting wrapper that tracks bytes sent over the wire for progress
+        val countingStream = object : OutputStream() {
+            override fun write(b: Int) {
+                output.write(b)
+                bytesSent++
+            }
+
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                output.write(b, off, len)
+                bytesSent += len
+
+                val elapsed = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+                val speed = bytesSent * 1000f / elapsed
+
+                onProgress(
+                    TransferProgress(
+                        bytesTransferred = bytesSent,
+                        totalBytes = totalSize,
+                        fileName = archiveName,
+                        speed = speed,
+                        peerAddress = peerAddr
+                    )
+                )
+            }
+
+            override fun flush() = output.flush()
+        }
+
+        // Layer: ZipOutputStream → BufferedOutputStream (64KB) → DigestOutputStream (hashes raw ZIP) → ChunkedOutputStream → countingStream → socket
+        val chunked = ChunkedOutputStream(countingStream)
+        val digestStream = java.security.DigestOutputStream(chunked, digest)
+        val bufferedChunked = BufferedOutputStream(digestStream, 64 * 1024)
+
+        ZipOutputStream(bufferedChunked).use { zos ->
+            for (uri in uris) {
+                val fileName = getFileName(uri) ?: "file_${System.currentTimeMillis()}"
+                val entry = ZipEntry(fileName)
+                zos.putNextEntry(entry)
+                contentResolver.openInputStream(uri)?.use { fileStream ->
+                    fileStream.copyTo(zos, bufferSize = 4 * 1024 * 1024)
+                }
+                zos.closeEntry()
+            }
+        }
+        // ZipOutputStream.close() → ChunkedOutputStream.close() → sends EOF marker
+
+        output.flush()
+
+        // Send checksum after the chunked stream
+        val checksum = digest.digest()
+        output.write(checksum)
+        output.flush()
+    }
+
+    /**
+     * Stream a single file to the peer.
+     */
+    private fun streamSingleFile(
+        output: BufferedOutputStream,
+        uri: Uri,
+        name: String,
+        size: Long,
+        offset: Long,
+        peerAddr: String
+    ) {
+        val inputStream = contentResolver.openInputStream(uri)
+            ?: throw IOException("Cannot open URI: $uri")
+
+        inputStream.use { stream ->
+            if (offset > 0) {
+                stream.skip(offset)
+            }
+
+            val buf = ByteArray(4 * 1024 * 1024)
+            var bytesSent = 0L
+            val totalToSend = size - offset
+            val startTime = System.currentTimeMillis()
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+
+            while (bytesSent < totalToSend) {
+                val toRead = minOf(buf.size.toLong(), totalToSend - bytesSent).toInt()
+                val read = stream.read(buf, 0, toRead)
+                if (read == -1) break
+
+                output.write(buf, 0, read)
+                digest.update(buf, 0, read)
+                bytesSent += read
+
+                val elapsed = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+                val speed = bytesSent * 1000f / elapsed
+
+                onProgress(
+                    TransferProgress(
+                        bytesTransferred = offset + bytesSent,
+                        totalBytes = size,
+                        fileName = name,
+                        speed = speed,
+                        peerAddress = peerAddr
+                    )
+                )
+            }
+            output.flush()
+
+            // Send checksum
+            val checksum = digest.digest()
+            output.write(checksum)
+            output.flush()
+        }
+    }
+
+    private fun readFullyBlocking(input: InputStream, buf: ByteArray) {
+        var read = 0
+        while (read < buf.size) {
+            val n = input.read(buf, read, buf.size - read)
+            if (n == -1) throw IOException("Unexpected EOF")
+            read += n
+        }
+    }
+
+    private fun getFileName(uri: Uri): String? {
+        if (uri.scheme == "content") {
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) return cursor.getString(idx)
+                }
+            }
+        }
+        return uri.lastPathSegment
+    }
+
+    private fun getFileSize(uri: Uri): Long {
+        if (uri.scheme == "content") {
+            // Fast path: query the content provider for the SIZE column
+            contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (idx >= 0) {
+                        val size = cursor.getLong(idx)
+                        if (size > 0) return size
+                    }
+                }
+            }
+            // Reliable fallback: stat the file descriptor directly
+            try {
+                contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    val size = pfd.statSize
+                    if (size > 0) return size
+                }
+            } catch (e: Exception) {
+                Log.w("SenderSession", "Could not stat file descriptor for $uri: ${e.message}")
+            }
+        }
+        // Last resort for file:// URIs
+        return try {
+            val path = uri.path
+            if (path != null) java.io.File(path).length() else 0L
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    /** Stop the sender and close the server socket and any active connections. */
+    fun stop() {
+        try {
+            serverSocket.close()
+        } catch (e: Exception) {
+            Log.w("SenderSession", "Error closing server socket: ${e.message}")
+        }
+        
+        synchronized(activeSockets) {
+            for (socket in activeSockets) {
+                try {
+                    socket.close()
+                } catch (e: Exception) {
+                    Log.w("SenderSession", "Error closing active socket: ${e.message}")
+                }
+            }
+            activeSockets.clear()
+        }
+    }
+}
+
+/**
+ * Minimal self-signed X.509 certificate generator for TLS.
+ * Compatible with all Android API levels 26+.
+ */
+internal object CertificateGenerator {
+
+    fun generate(
+        keyPair: java.security.KeyPair,
+        notBefore: Date,
+        notAfter: Date
+    ): X509Certificate {
+        val certFactory = java.security.cert.CertificateFactory.getInstance("X.509")
+        val certBytes = buildSelfSignedDER(keyPair, notBefore, notAfter)
+        val cert = certFactory.generateCertificate(ByteArrayInputStream(certBytes)) as X509Certificate
+        return cert
+    }
+
+    /**
+     * Build a minimal self-signed X.509 v1 certificate in DER format.
+     * This is the smallest valid certificate that works for TLS.
+     */
+    private fun buildSelfSignedDER(
+        keyPair: java.security.KeyPair,
+        notBefore: Date,
+        notAfter: Date
+    ): ByteArray {
+        val tbsCert = buildTBSCertificate(keyPair, notBefore, notAfter)
+        val signature = java.security.Signature.getInstance("SHA256withRSA")
+        signature.initSign(keyPair.private)
+        signature.update(tbsCert)
+        val sig = signature.sign()
+
+        // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signature }
+        val sigAlg = sha256WithRSAAlgorithmIdentifier()
+        val sigBitString = wrapBitString(sig)
+
+        return wrapSequence(tbsCert + sigAlg + sigBitString)
+    }
+
+    private fun buildTBSCertificate(
+        keyPair: java.security.KeyPair,
+        notBefore: Date,
+        notAfter: Date
+    ): ByteArray {
+        val components = ByteArrayOutputStream()
+
+        // Serial number
+        components.write(wrapInteger(byteArrayOf(0x01)))
+
+        // Signature algorithm: SHA256withRSA
+        components.write(sha256WithRSAAlgorithmIdentifier())
+
+        // Issuer: CN=Synapse
+        components.write(buildSimpleDN("Synapse Ephemeral"))
+
+        // Validity
+        components.write(buildValidity(notBefore, notAfter))
+
+        // Subject: CN=Synapse
+        components.write(buildSimpleDN("Synapse Ephemeral"))
+
+        // Subject Public Key Info
+        components.write(keyPair.public.encoded)
+
+        return wrapSequence(components.toByteArray())
+    }
+
+    private fun sha256WithRSAAlgorithmIdentifier(): ByteArray {
+        // OID 1.2.840.113549.1.1.11 = SHA256withRSA
+        val oid = byteArrayOf(
+            0x06, 0x09, 0x2a, 0x86.toByte(), 0x48, 0x86.toByte(), 0xf7.toByte(),
+            0x0d, 0x01, 0x01, 0x0b
+        )
+        val nullParam = byteArrayOf(0x05, 0x00)
+        return wrapSequence(oid + nullParam)
+    }
+
+    private fun buildSimpleDN(commonName: String): ByteArray {
+        // OID 2.5.4.3 = commonName
+        val cnOid = byteArrayOf(0x06, 0x03, 0x55, 0x04, 0x03)
+        val cnValue = wrapUTF8String(commonName)
+        val atv = wrapSequence(cnOid + cnValue)
+        val rdn = wrapSet(atv)
+        return wrapSequence(rdn)
+    }
+
+    private fun buildValidity(notBefore: Date, notAfter: Date): ByteArray {
+        val fmt = java.text.SimpleDateFormat("yyMMddHHmmss'Z'", java.util.Locale.US)
+        fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        val before = wrapUTCTime(fmt.format(notBefore))
+        val after = wrapUTCTime(fmt.format(notAfter))
+        return wrapSequence(before + after)
+    }
+
+    // ASN.1 DER helpers
+    private fun wrapSequence(content: ByteArray): ByteArray = wrapTag(0x30, content)
+    private fun wrapSet(content: ByteArray): ByteArray = wrapTag(0x31, content)
+    private fun wrapInteger(value: ByteArray): ByteArray = wrapTag(0x02, value)
+    private fun wrapBitString(content: ByteArray): ByteArray = wrapTag(0x03, byteArrayOf(0x00) + content)
+    private fun wrapUTF8String(s: String): ByteArray = wrapTag(0x0c, s.toByteArray(Charsets.UTF_8))
+    private fun wrapUTCTime(s: String): ByteArray = wrapTag(0x17, s.toByteArray(Charsets.US_ASCII))
+
+    private fun wrapTag(tag: Int, content: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(tag)
+        writeLength(out, content.size)
+        out.write(content)
+        return out.toByteArray()
+    }
+
+    private fun writeLength(out: ByteArrayOutputStream, length: Int) {
+        if (length < 128) {
+            out.write(length)
+        } else if (length < 256) {
+            out.write(0x81)
+            out.write(length)
+        } else {
+            out.write(0x82)
+            out.write(length shr 8)
+            out.write(length and 0xff)
+        }
+    }
+}
