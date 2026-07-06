@@ -309,17 +309,10 @@ func (a *App) ScanPeers() []PeerInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	go func() {
-		_ = discovery.Browse(ctx, entries)
-	}()
-
-	// Close the entries channel once the context expires so that the
-	// for-range loop below terminates. Without this, the channel is
-	// never closed and ScanPeers blocks forever.
-	go func() {
-		<-ctx.Done()
+	if err := discovery.Browse(ctx, entries); err != nil {
 		close(entries)
-	}()
+		return nil
+	}
 
 	var peers []PeerInfo
 	for entry := range entries {
