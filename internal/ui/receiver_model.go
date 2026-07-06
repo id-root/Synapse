@@ -172,11 +172,10 @@ func scanPeersCmd() tea.Msg {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go func() {
-		if err := discovery.Browse(ctx, entries); err != nil {
-			// In a real app we might send an error msg, but browse can fail if no listeners
-		}
-	}()
+	if err := discovery.Browse(ctx, entries); err != nil {
+		close(entries)
+		return errMsg{err: fmt.Errorf("failed to start scan: %w", err)}
+	}
 
 	var peers []*zeroconf.ServiceEntry
 	for entry := range entries {
