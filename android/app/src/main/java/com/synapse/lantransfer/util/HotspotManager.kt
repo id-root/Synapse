@@ -1,7 +1,6 @@
 package com.synapse.lantransfer.util
 
 import android.content.Context
-import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -78,80 +77,98 @@ class HotspotManager(private val context: Context) {
      * creating a new hotspot and instead host files directly on the existing
      * tethering network.
      */
+    /**
+     * Returns true if the user's personal Mobile Hotspot (Wi-Fi tethering) is
+     * currently active.
+     *
+     * Uses two permission-free strategies that work across all API levels:
+     *  1. WifiManager.isWifiApEnabled() via reflection.
+     *  2. Scanning network interfaces for a live AP interface (ap0, wlan1, …).
+     *
+     * Note: ConnectivityManager.getTetheredIfaces() was intentionally avoided —
+     * it requires the TETHER_PRIVILEGED signature permission on Android 10+ and
+     * is therefore inaccessible to regular apps.
+     */
     fun isTetheringActive(): Boolean {
-        return try {
-            // ConnectivityManager.getTetheredIfaces() lists all interfaces that are
-            // actively tethered (Wi-Fi hotspot, USB, Bluetooth). We look for a wlan
-            // or ap* interface to detect Wi-Fi hotspot specifically.
-            val cm = context.applicationContext
-                .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            @Suppress("DEPRECATION")
-            val tethered = cm.tetheredIfaces ?: emptyArray()
-            tethered.any { it.startsWith("wlan") || it.startsWith("ap") }
+        // Strategy 1: WifiManager hidden API via reflection (fast, reliable)
+        try {
+            val method = wifiManager.javaClass.getMethod("isWifiApEnabled")
+            val result = method.invoke(wifiManager)
+            if (result is Boolean && result) return true
         } catch (e: Exception) {
-            Log.w(TAG, "Could not check tethering state via ConnectivityManager: ${e.message}")
-            // Fallback: use the deprecated (but functional) isWifiApEnabled reflection call
-            try {
-                @Suppress("DEPRECATION")
-                val method = wifiManager.javaClass.getMethod("isWifiApEnabled")
-                method.invoke(wifiManager) as? Boolean ?: false
-            } catch (ex: Exception) {
-                false
-            }
+            Log.w(TAG, "isWifiApEnabled reflection failed: ${e.message}")
         }
+
+        // Strategy 2: Look for a live AP network interface as a fallback
+        return hasActiveApInterface()
     }
 
     /**
      * Returns the IPv4 address of this device on the active Wi-Fi tethering
-     * (Mobile Hotspot) network — i.e. the address connected computers can reach.
+     * (Mobile Hotspot) network — i.e. the address connected devices can reach.
      *
-     * The approach:
-     *  1. Ask ConnectivityManager which interface is tethered.
-     *  2. Look up the IPv4 address on that specific interface.
-     *  3. Fallback to scanning known hotspot interface names (ap0, wlan1, …).
-     *  4. Last resort: return the Android hotspot gateway default "192.168.43.1".
+     * Scans network interfaces for well-known AP names (ap0, wlan1, swlan*, …)
+     * and any other UP interface whose name starts with "ap" or "wlan".
+     * Falls back to Android's historical hotspot gateway "192.168.43.1".
      */
     fun getTetheringIpAddress(): String {
         try {
-            // Step 1: find the tethered Wi-Fi interface name
-            val cm = context.applicationContext
-                .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            @Suppress("DEPRECATION")
-            val tethered = cm.tetheredIfaces ?: emptyArray()
-            val tetherIface = tethered.firstOrNull {
-                it.startsWith("wlan") || it.startsWith("ap")
-            }
-
-            if (tetherIface != null) {
-                // Step 2: resolve its IPv4 address
-                val netIface = NetworkInterface.getByName(tetherIface)
-                val addrs = Collections.list(netIface?.inetAddresses ?: return@getTetheringIpAddress "192.168.43.1")
-                val ip = addrs.filterIsInstance<Inet4Address>()
-                    .firstOrNull { !it.isLoopbackAddress }
-                    ?.hostAddress
-                if (ip != null) return ip
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not resolve tethering IP via ConnectivityManager: ${e.message}")
-        }
-
-        // Step 3: scan well-known AP interface names
-        try {
-            val knownApNames = listOf("ap0", "wlan1", "swlan0", "swlan1")
+            // Priority: well-known AP interface names used by most Android OEMs
+            val knownApNames = listOf("ap0", "wlan1", "swlan0", "swlan1", "wlan2")
             for (name in knownApNames) {
                 val netIface = NetworkInterface.getByName(name) ?: continue
-                val addrs = Collections.list(netIface.inetAddresses)
-                val ip = addrs.filterIsInstance<Inet4Address>()
+                if (!netIface.isUp) continue
+                val ip = Collections.list(netIface.inetAddresses)
+                    .filterIsInstance<Inet4Address>()
                     .firstOrNull { !it.isLoopbackAddress }
                     ?.hostAddress
-                if (ip != null) return ip
+                if (ip != null) {
+                    Log.d(TAG, "Tethering IP resolved on $name: $ip")
+                    return ip
+                }
+            }
+
+            // Broader scan: any UP interface whose name starts with "ap" or "wlan"
+            val allInterfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            for (iface in allInterfaces) {
+                if (!iface.isUp) continue
+                if (!iface.name.startsWith("ap") && !iface.name.startsWith("wlan")) continue
+                val ip = Collections.list(iface.inetAddresses)
+                    .filterIsInstance<Inet4Address>()
+                    .firstOrNull { !it.isLoopbackAddress }
+                    ?.hostAddress
+                if (ip != null) {
+                    Log.d(TAG, "Tethering IP resolved on ${iface.name}: $ip")
+                    return ip
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not scan AP interfaces: ${e.message}")
+            Log.w(TAG, "Error scanning interfaces for tethering IP: ${e.message}")
         }
 
-        // Step 4: Android's historical default gateway for Mobile Hotspot
+        // Last resort: Android's historical default gateway for Mobile Hotspot
+        Log.w(TAG, "Could not resolve tethering IP, using default 192.168.43.1")
         return "192.168.43.1"
+    }
+
+    /**
+     * Returns true if any network interface that looks like a Wi-Fi AP
+     * (name starting with "ap" or "wlan") is currently UP and has an IPv4 address.
+     */
+    private fun hasActiveApInterface(): Boolean {
+        return try {
+            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            interfaces.any { iface ->
+                iface.isUp &&
+                (iface.name.startsWith("ap") || iface.name.startsWith("wlan")) &&
+                Collections.list(iface.inetAddresses).any { addr ->
+                    !addr.isLoopbackAddress && addr is Inet4Address
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "hasActiveApInterface scan failed: ${e.message}")
+            false
+        }
     }
 
     // ── LocalOnlyHotspot ─────────────────────────────────────────────────────
